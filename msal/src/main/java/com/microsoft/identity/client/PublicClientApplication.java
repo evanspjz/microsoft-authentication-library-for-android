@@ -28,11 +28,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.RemoteException;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.annotation.VisibleForTesting;
+import android.support.annotation.WorkerThread;
 import android.util.Pair;
 
 import com.google.gson.Gson;
@@ -46,14 +49,19 @@ import com.microsoft.identity.client.internal.controllers.MsalExceptionAdapter;
 import com.microsoft.identity.client.internal.controllers.OperationParametersAdapter;
 import com.microsoft.identity.client.internal.telemetry.DefaultEvent;
 import com.microsoft.identity.client.internal.telemetry.Defaults;
+import com.microsoft.identity.common.BuildConfig;
 import com.microsoft.identity.common.adal.internal.cache.IStorageHelper;
 import com.microsoft.identity.common.adal.internal.cache.StorageHelper;
 import com.microsoft.identity.common.exception.BaseException;
+import com.microsoft.identity.common.exception.ClientException;
+import com.microsoft.identity.common.exception.ErrorStrings;
 import com.microsoft.identity.common.internal.authorities.Authority;
 import com.microsoft.identity.common.internal.authorities.AuthorityDeserializer;
 import com.microsoft.identity.common.internal.authorities.AzureActiveDirectoryAudience;
 import com.microsoft.identity.common.internal.authorities.AzureActiveDirectoryAudienceDeserializer;
 import com.microsoft.identity.common.internal.authorities.AzureActiveDirectoryAuthority;
+import com.microsoft.identity.common.internal.broker.MicrosoftAuthClient;
+import com.microsoft.identity.common.internal.broker.MicrosoftAuthServiceFuture;
 import com.microsoft.identity.common.internal.cache.CacheKeyValueDelegate;
 import com.microsoft.identity.common.internal.cache.IAccountCredentialCache;
 import com.microsoft.identity.common.internal.cache.ICacheKeyValueDelegate;
@@ -80,8 +88,8 @@ import com.microsoft.identity.common.internal.request.AcquireTokenOperationParam
 import com.microsoft.identity.common.internal.request.AcquireTokenSilentOperationParameters;
 import com.microsoft.identity.common.internal.request.ILocalAuthenticationCallback;
 import com.microsoft.identity.common.internal.result.ILocalAuthenticationResult;
+import com.microsoft.identity.common.internal.result.MsalBrokerResultAdapter;
 import com.microsoft.identity.common.internal.util.StringUtil;
-import com.microsoft.identity.msal.BuildConfig;
 import com.microsoft.identity.msal.R;
 
 import java.io.File;
@@ -96,6 +104,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.microsoft.identity.common.adal.internal.AuthenticationConstants.Broker.ACCOUNT_CLIENTID_KEY;
+import static com.microsoft.identity.common.adal.internal.AuthenticationConstants.Broker.ACCOUNT_ENVIRONMENT_KEY;
 import static com.microsoft.identity.common.internal.cache.SharedPreferencesAccountCredentialCache.DEFAULT_ACCOUNT_CREDENTIAL_SHARED_PREFERENCES;
 
 /**
@@ -364,6 +374,7 @@ public final class PublicClientApplication {
         ApiDispatcher.initializeDiagnosticContext();
         final String methodName = ":getAccounts";
         final List<IAccount> accounts = getAccounts();
+
         final boolean invokeOnMainThread = Looper.myLooper() == Looper.getMainLooper();
         final Handler handler = new Handler(
                 invokeOnMainThread
@@ -409,7 +420,7 @@ public final class PublicClientApplication {
                             handler.post(new Runnable() {
                                 @Override
                                 public void run() {
-                                    callback.onAccountsLoaded(getAccounts());
+                                    callback.onAccountsLoaded(getAccountsFromBroker());
                                 }
                             });
                         }
@@ -426,7 +437,7 @@ public final class PublicClientApplication {
             handler.post(new Runnable() {
                 @Override
                 public void run() {
-                    callback.onAccountsLoaded(accounts);
+                    callback.onAccountsLoaded(getAccountsFromBroker());
                 }
             });
         }
@@ -455,6 +466,39 @@ public final class PublicClientApplication {
         }
 
         return Collections.unmodifiableList(accountsToReturn);
+    }
+
+    @WorkerThread
+    private List<IAccount> getAccountsFromBroker() {
+        final List<IAccount> accountsToReturn = getAccounts();
+        // Grab the Accounts from broker
+        IMicrosoftAuthService service;
+        MicrosoftAuthClient client = new MicrosoftAuthClient(mPublicClientConfiguration.getAppContext());
+
+        try {
+            //Do we want a time out here?
+            MicrosoftAuthServiceFuture future = client.connect();
+            service = future.get();
+        } catch (Exception e) {
+            throw new RuntimeException("Exception occurred while awaiting (get) return of MicrosoftAuthService", e);
+        }
+
+        try {
+            final Bundle requestBundle = new Bundle();
+            requestBundle.putString(ACCOUNT_CLIENTID_KEY, mPublicClientConfiguration.getClientId());
+            requestBundle.putString(ACCOUNT_ENVIRONMENT_KEY, mPublicClientConfiguration.getDefaultAuthority().getAuthorityUri().getHost());
+            final Bundle resultBundle = service.getAccounts(requestBundle);
+            List<AccountRecord> accountRecords = new MsalBrokerResultAdapter().getAccountRecordListFromBundle(resultBundle);
+
+            // Adapt them to the MSAL model
+            for (final AccountRecord record : accountRecords) {
+                accountsToReturn.add(AccountAdapter.adapt(record));
+            }
+        } catch (RemoteException e) {
+            throw new RuntimeException("Exception occurred while attempting to invoke remote service");
+        }
+
+        return accountsToReturn;
     }
 
     /**

@@ -153,7 +153,16 @@ public class BrokerMsalController extends BaseController {
             final BrokerRequest brokerRequest =  msalBrokerRequestAdapter.
                     brokerRequestFromSilentOperationParameters(parameters);
 
+            //Add the version number of the broker v2 version
+
             requestBundle.putSerializable(AuthenticationConstants.Broker.BROKER_REQUEST_V2, brokerRequest);
+//            requestBundle.putString(AuthenticationConstants.Broker.BROKER_VERSION, BROKER_V2_VERSION_CODE);
+
+//            final Bundle connectResult = service.connect(requestBundle);
+//            if (!connectResult.getBoolean(AUTH_SERVICE_CONNECT)) {
+//                final MsalBrokerResultAdapter msalBrokerResultAdapter = new MsalBrokerResultAdapter();
+//                throw msalBrokerResultAdapter.baseExceptionFromBundle(connectResult);
+//            }
 
             final Bundle resultBundle = service.acquireTokenSilently(requestBundle);
 
